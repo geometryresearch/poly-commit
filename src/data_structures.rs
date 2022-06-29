@@ -1,5 +1,5 @@
-use crate::{Polynomial, Rc, String, Vec};
-use ark_ff::{Field, PrimeField, ToConstraintField};
+use crate::{Polynomial, PolynomialCommitment, Rc, String, Vec};
+use ark_ff::{Field, ToConstraintField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, SerializationError};
 use ark_std::rand::RngCore;
 use ark_std::{
@@ -104,9 +104,9 @@ pub trait PCProof: Clone + ark_ff::ToBytes + CanonicalSerialize + CanonicalDeser
 
 /// A proof of satisfaction of linear combinations.
 #[derive(Clone, CanonicalSerialize, CanonicalDeserialize)]
-pub struct BatchLCProof<F: PrimeField, T: Clone + CanonicalSerialize + CanonicalDeserialize> {
+pub struct BatchLCProof<F: Field, P: Polynomial<F>, PC: PolynomialCommitment<F, P>> {
     /// Evaluation proof.
-    pub proof: T,
+    pub proof: PC::BatchProof,
     /// Evaluations required to verify the proof.
     pub evals: Option<Vec<F>>,
 }

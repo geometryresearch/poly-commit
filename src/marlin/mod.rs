@@ -1,4 +1,3 @@
-use crate::{challenge::ChallengeGenerator, CHALLENGE_SIZE};
 use crate::{kzg10, Error};
 use crate::{BTreeMap, BTreeSet, Debug, RngCore, String, ToString, Vec};
 use crate::{BatchLCProof, LabeledPolynomial, LinearCombination};
@@ -6,7 +5,6 @@ use crate::{Evaluations, LabeledCommitment, QuerySet};
 use crate::{PCRandomness, Polynomial, PolynomialCommitment};
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{One, Zero};
-use ark_sponge::CryptographicSponge;
 use ark_std::{convert::TryInto, hash::Hash, ops::AddAssign};
 
 /// Polynomial commitment scheme from [[KZG10]][kzg] that enforces
@@ -26,26 +24,11 @@ pub mod marlin_pc;
 pub mod marlin_pst13_pc;
 
 /// Common functionalities between `marlin_pc` and `marlin_pst13_pc`
-struct Marlin<E, S, P, PC>
-where
-    E: PairingEngine,
-    S: CryptographicSponge,
-    P: Polynomial<E::Fr>,
-    PC: PolynomialCommitment<E::Fr, P, S>,
-{
+struct Marlin<E: PairingEngine> {
     _engine: core::marker::PhantomData<E>,
-    _sponge: core::marker::PhantomData<S>,
-    _poly: core::marker::PhantomData<P>,
-    _pc: core::marker::PhantomData<PC>,
 }
 
-impl<E, S, P, PC> Marlin<E, S, P, PC>
-where
-    E: PairingEngine,
-    S: CryptographicSponge,
-    P: Polynomial<E::Fr>,
-    PC: PolynomialCommitment<E::Fr, P, S>,
-{
+impl<E: PairingEngine> Marlin<E> {
     /// MSM for `commitments` and `coeffs`
     fn combine_commitments<'a>(
         coeffs_and_comms: impl IntoIterator<Item = (E::Fr, &'a marlin_pc::Commitment<E>)>,
@@ -104,28 +87,31 @@ where
             .collect()
     }
 
-    /// Accumulate `commitments` and `values` according to the challenges produces by `challenge_gen`.
-    fn accumulate_commitments_and_values<'a>(
+    /// Accumulate `commitments` and `values` according to `opening_challenge`.
+    fn accumulate_commitments_and_values_individual_opening_challenges<'a>(
         commitments: impl IntoIterator<Item = &'a LabeledCommitment<marlin_pc::Commitment<E>>>,
         values: impl IntoIterator<Item = E::Fr>,
-        challenge_gen: &mut ChallengeGenerator<E::Fr, S>,
+        opening_challenges: &dyn Fn(u64) -> E::Fr,
         vk: Option<&marlin_pc::VerifierKey<E>>,
     ) -> Result<(E::G1Projective, E::Fr), Error> {
         let acc_time = start_timer!(|| "Accumulating commitments and values");
         let mut combined_comm = E::G1Projective::zero();
         let mut combined_value = E::Fr::zero();
+        let mut opening_challenge_counter = 0;
         for (labeled_commitment, value) in commitments.into_iter().zip(values) {
             let degree_bound = labeled_commitment.degree_bound();
             let commitment = labeled_commitment.commitment();
             assert_eq!(degree_bound.is_some(), commitment.shifted_comm.is_some());
 
-            let challenge_i = challenge_gen.try_next_challenge_of_size(CHALLENGE_SIZE);
+            let challenge_i = opening_challenges(opening_challenge_counter);
+            opening_challenge_counter += 1;
 
             combined_comm += &commitment.comm.0.mul(challenge_i);
             combined_value += &(value * &challenge_i);
 
             if let Some(degree_bound) = degree_bound {
-                let challenge_i_1 = challenge_gen.try_next_challenge_of_size(CHALLENGE_SIZE);
+                let challenge_i_1 = opening_challenges(opening_challenge_counter);
+                opening_challenge_counter += 1;
 
                 let shifted_comm = commitment
                     .shifted_comm
@@ -155,7 +141,7 @@ where
         commitments: impl IntoIterator<Item = &'a LabeledCommitment<marlin_pc::Commitment<E>>>,
         query_set: &QuerySet<D>,
         evaluations: &Evaluations<D, E::Fr>,
-        opening_challenges: &mut ChallengeGenerator<E::Fr, S>,
+        opening_challenges: &dyn Fn(u64) -> E::Fr,
         vk: Option<&marlin_pc::VerifierKey<E>>,
     ) -> Result<(Vec<kzg10::Commitment<E>>, Vec<D>, Vec<E::Fr>), Error>
     where
@@ -199,7 +185,7 @@ where
                 values_to_combine.push(*v_i);
             }
 
-            let (c, v) = Self::accumulate_commitments_and_values(
+            let (c, v) = Marlin::accumulate_commitments_and_values_individual_opening_challenges(
                 comms_to_combine,
                 values_to_combine,
                 opening_challenges,
@@ -224,23 +210,22 @@ where
     /// On input a list of polynomials, linear combinations of those polynomials,
     /// and a query set, `open_combination` outputs a proof of evaluation of
     /// the combinations at the points in the query set.
-    fn open_combinations<'a, D>(
+    fn open_combinations_individual_opening_challenges<'a, P, D, PC>(
         ck: &PC::CommitterKey,
         lc_s: impl IntoIterator<Item = &'a LinearCombination<E::Fr>>,
         polynomials: impl IntoIterator<Item = &'a LabeledPolynomial<E::Fr, P>>,
         commitments: impl IntoIterator<Item = &'a LabeledCommitment<PC::Commitment>>,
         query_set: &QuerySet<D>,
-        opening_challenges: &mut ChallengeGenerator<E::Fr, S>,
+        opening_challenges: &dyn Fn(u64) -> E::Fr,
         rands: impl IntoIterator<Item = &'a PC::Randomness>,
         rng: Option<&mut dyn RngCore>,
-    ) -> Result<BatchLCProof<E::Fr, PC::BatchProof>, Error>
+    ) -> Result<BatchLCProof<E::Fr, P, PC>, Error>
     where
         P: 'a + Polynomial<E::Fr, Point = D>,
         D: Debug + Clone + Hash + Ord + Sync,
         PC: PolynomialCommitment<
             E::Fr,
             P,
-            S,
             Commitment = marlin_pc::Commitment<E>,
             PreparedCommitment = marlin_pc::PreparedCommitment<E>,
             Error = Error,
@@ -296,18 +281,18 @@ where
                 LabeledPolynomial::new(lc_label.clone(), poly, degree_bound, hiding_bound);
             lc_polynomials.push(lc_poly);
             lc_randomness.push(randomness);
-            lc_commitments.push(Self::combine_commitments(coeffs_and_comms));
+            lc_commitments.push(Marlin::combine_commitments(coeffs_and_comms));
             lc_info.push((lc_label, degree_bound));
         }
 
-        let comms = Self::normalize_commitments(lc_commitments);
+        let comms = Marlin::normalize_commitments(lc_commitments);
         let lc_commitments = lc_info
             .into_iter()
             .zip(comms)
             .map(|((label, d), c)| LabeledCommitment::new(label, c, d))
             .collect::<Vec<_>>();
 
-        let proof = PC::batch_open(
+        let proof = PC::batch_open_individual_opening_challenges(
             ck,
             lc_polynomials.iter(),
             lc_commitments.iter(),
@@ -320,14 +305,14 @@ where
         Ok(BatchLCProof { proof, evals: None })
     }
 
-    fn check_combinations<'a, R, D>(
+    fn check_combinations_individual_opening_challenges<'a, R, P, D, PC>(
         vk: &PC::VerifierKey,
         lc_s: impl IntoIterator<Item = &'a LinearCombination<E::Fr>>,
         commitments: impl IntoIterator<Item = &'a LabeledCommitment<PC::Commitment>>,
         query_set: &QuerySet<P::Point>,
         evaluations: &Evaluations<P::Point, E::Fr>,
-        proof: &BatchLCProof<E::Fr, PC::BatchProof>,
-        opening_challenges: &mut ChallengeGenerator<E::Fr, S>,
+        proof: &BatchLCProof<E::Fr, P, PC>,
+        opening_challenges: &dyn Fn(u64) -> E::Fr,
         rng: &mut R,
     ) -> Result<bool, Error>
     where
@@ -337,7 +322,6 @@ where
         PC: PolynomialCommitment<
             E::Fr,
             P,
-            S,
             Commitment = marlin_pc::Commitment<E>,
             PreparedCommitment = marlin_pc::PreparedCommitment<E>,
             Error = Error,
@@ -389,13 +373,13 @@ where
             }
             let lc_time =
                 start_timer!(|| format!("Combining {} commitments for {}", num_polys, lc_label));
-            lc_commitments.push(Self::combine_commitments(coeffs_and_comms));
+            lc_commitments.push(Marlin::combine_commitments(coeffs_and_comms));
             end_timer!(lc_time);
             lc_info.push((lc_label, degree_bound));
         }
         end_timer!(lc_processing_time);
         let combined_comms_norm_time = start_timer!(|| "Normalizing commitments");
-        let comms = Self::normalize_commitments(lc_commitments);
+        let comms = Marlin::normalize_commitments(lc_commitments);
         let lc_commitments = lc_info
             .into_iter()
             .zip(comms)
@@ -403,7 +387,7 @@ where
             .collect::<Vec<_>>();
         end_timer!(combined_comms_norm_time);
 
-        PC::batch_check(
+        PC::batch_check_individual_opening_challenges(
             vk,
             &lc_commitments,
             &query_set,
