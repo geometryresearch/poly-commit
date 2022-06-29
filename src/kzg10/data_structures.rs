@@ -1,12 +1,13 @@
 use crate::*;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{PrimeField, ToBytes, ToConstraintField, Zero};
+use ark_poly::univariate::DensePolynomial;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, SerializationError};
 use ark_std::{
     borrow::Cow,
     io::{Read, Write},
     marker::PhantomData,
-    ops::{Add, AddAssign},
+    ops::{Add, AddAssign, Mul},
 };
 
 /// `UniversalParams` are the universal parameters for the KZG10 scheme.
@@ -403,6 +404,22 @@ impl<'a, E: PairingEngine> AddAssign<(E::Fr, &'a Commitment<E>)> for Commitment<
     }
 }
 
+impl<'a, E: PairingEngine> Add for Commitment<E> {
+    type Output = Self;
+
+    fn add(self, rhs: Commitment<E>) -> Self::Output {
+        Self(self.0 + rhs.0)
+    }
+}
+
+impl<E: PairingEngine> Mul<E::Fr> for Commitment<E> {
+    type Output = Self;
+
+    fn mul(self, rhs: E::Fr) -> Self::Output {
+        Self(self.0.mul(rhs).into_affine())
+    }
+}
+
 /// `PreparedCommitment` commits to a polynomial and prepares for mul_bits.
 #[derive(Derivative)]
 #[derivative(
@@ -514,6 +531,37 @@ impl<'a, F: PrimeField, P: UVPolynomial<F>> AddAssign<(F, &'a Randomness<F, P>)>
     #[inline]
     fn add_assign(&mut self, (f, other): (F, &'a Randomness<F, P>)) {
         self.blinding_polynomial += (f, &other.blinding_polynomial);
+    }
+}
+
+impl<F: PrimeField, P: UVPolynomial<F>> Add for Randomness<F, P> {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        let sum_poly = self.blinding_polynomial + other.blinding_polynomial;
+        Self {
+            blinding_polynomial: sum_poly,
+            _field: PhantomData,
+        }
+    }
+}
+
+/// Multiply randomness by a scalar only when Randomness is a DensePolynomial over F.
+impl<'a, F: PrimeField> Mul<F> for Randomness<F, DensePolynomial<F>> {
+    type Output = Self;
+
+    fn mul(mut self, rhs: F) -> Self::Output {
+        self.blinding_polynomial = &self.blinding_polynomial * rhs;
+        self
+    }
+}
+
+impl<F: PrimeField, P: UVPolynomial<F>> From<P> for Randomness<F, P> {
+    fn from(input: P) -> Self {
+        Self {
+            blinding_polynomial: input,
+            _field: PhantomData,
+        }
     }
 }
 
