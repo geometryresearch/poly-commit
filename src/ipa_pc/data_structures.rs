@@ -119,6 +119,10 @@ impl<G: AffineCurve> PCCommitment for Commitment<G> {
     fn has_degree_bound(&self) -> bool {
         false
     }
+
+    fn size_in_bytes(&self) -> usize {
+        ark_ff::to_bytes![G::zero()].unwrap().len() / 2
+    }
 }
 
 impl<G: AffineCurve> ToBytes for Commitment<G> {
@@ -212,7 +216,11 @@ pub struct Proof<G: AffineCurve> {
     pub rand: Option<G::ScalarField>,
 }
 
-impl<G: AffineCurve> PCProof for Proof<G> {}
+impl<G: AffineCurve> PCProof for Proof<G> {
+    fn size_in_bytes(&self) -> usize {
+        ark_ff::to_bytes![self].unwrap().len()
+    }
+}
 
 impl<G: AffineCurve> ToBytes for Proof<G> {
     #[inline]

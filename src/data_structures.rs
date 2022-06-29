@@ -66,10 +66,7 @@ pub trait PCCommitment:
     fn has_degree_bound(&self) -> bool;
 
     /// Size in bytes
-    #[deprecated(since = "0.4.0", note = "Please use `.serialized_size()` instead.")]
-    fn size_in_bytes(&self) -> usize {
-        self.serialized_size()
-    }
+    fn size_in_bytes(&self) -> usize;
 }
 
 /// Defines the minimal interface of prepared commitments for any polynomial
@@ -102,10 +99,7 @@ pub trait PCRandomness: Clone + CanonicalSerialize + CanonicalDeserialize {
 /// commitment scheme.
 pub trait PCProof: Clone + ark_ff::ToBytes + CanonicalSerialize + CanonicalDeserialize {
     /// Size in bytes
-    #[deprecated(since = "0.4.0", note = "Please use `.serialized_size()` instead.")]
-    fn size_in_bytes(&self) -> usize {
-        self.serialized_size()
-    }
+    fn size_in_bytes(&self) -> usize;
 }
 
 /// A proof of satisfaction of linear combinations.
